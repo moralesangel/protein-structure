@@ -21,7 +21,7 @@ Each structure becomes one graph:
 | | |
 | :--- | :--- |
 | **Nodes** | One per residue, positioned at its Cα |
-| **Node features** | Residue identity (21-way one-hot), Kyte–Doolittle hydrophobicity, formal charge, relative SASA |
+| **Node features** | Residue identity (21-way one-hot), Kyte–Doolittle hydrophobicity, formal charge, relative SASA, plus six geometric features describing the local pocket shape |
 | **Edges** | Every residue pair within 8 Å |
 | **Edge features** | The Cα–Cα distance, normalised by the cutoff |
 | **Label** | 1 if the residue has any atom within 5 Å of a crystallised ligand |
@@ -43,9 +43,20 @@ agg = scatter_mean(msg, dst)
 out = update_mlp(cat([x, agg]))
 ```
 
-Three such layers with residual connections and LayerNorm, then a small
+Four such layers with residual connections and LayerNorm, then a small
 classifier head. LayerNorm rather than BatchNorm because graphs vary enormously
 in size and batch statistics are meaningless across them.
+
+## Results
+
+Validation **PR-AUC 0.611** against a 0.066 base rate, ROC-AUC 0.901. In the top
+5% of ranked residues, **65% really contact a ligand** — ten times the random
+rate — and that slice already recovers half of all binding residues.
+
+The jump came from geometry. Chemistry-only features reached PR-AUC 0.151;
+adding six per-residue geometric features (concavity, radial position,
+shell densities, protrusion, planarity) took it to 0.611. Chemistry says what a
+residue is; a pocket is about where it sits.
 
 ## Training and the metric that matters
 

@@ -1,52 +1,73 @@
 # Results
 
 Trained on 591 residue graphs from the PDB (141,161 residues), split 85/15.
-Best checkpoint at epoch 80, selected on validation PR-AUC.
+Best checkpoint at epoch 87, selected on validation PR-AUC.
 
 ## Validation
 
 | Metric | Value |
 | :--- | ---: |
-| PR-AUC | **0.151** |
-| ROC-AUC | 0.688 |
-| Best F1 | 0.214 (at threshold 0.24) |
-| Base rate (positives) | 0.066 |
-| Lift over base rate | 2.3x |
+| PR-AUC | **0.611** |
+| ROC-AUC | 0.901 |
+| Best F1 | 0.563 (threshold 0.28) |
+| Base rate | 0.066 |
+| Lift over base rate | 9.3x |
 
-PR-AUC is the headline because positives are rare: only 6.6% of residues contact a ligand, so a model that always answers "no" is already 93.4% accurate and completely useless.
+## What that means in practice
+
+Rank every residue in a held-out structure by predicted probability:
+
+| Slice | Precision | Recall | vs random |
+| :--- | ---: | ---: | ---: |
+| Top 5% | 65.2% | 49.4% | 9.9x |
+| Top 10% | 43.1% | 65.3% | 6.5x |
+| Top 20% | 26.6% | 80.8% | 4.0x |
+
+Two thirds of the top 5% really do contact a ligand, against 6.6% if you picked
+at random, and that slice already recovers half of every binding residue.
 
 ## Per-structure, on the demo set
 
-| PDB | Structure | PR-AUC | ROC-AUC | Contacts / residues |
+| PDB | Structure | PR-AUC | ROC-AUC | Top 5% precision |
 | :--- | :--- | ---: | ---: | ---: |
-| 1M17 | EGFR kinase + erlotinib | 0.046 | 0.510 | 13 / 312 |
-| 3ERT | Oestrogen receptor + tamoxifen | 0.081 | 0.601 | 8 / 246 |
-| 1STP | Streptavidin + biotin | 0.610 | 0.919 | 5 / 121 |
-| 2GBP | Glucose-binding protein | 0.040 | 0.705 | 3 / 309 |
-| 4HHB | Haemoglobin + haem | 0.119 | 0.743 | 25 / 574 |
+| 1M17 | EGFR kinase + erlotinib | 0.438 | 0.894 | 27% (base 4.2%) |
+| 3ERT | Oestrogen receptor + tamoxifen | 0.511 | 0.946 | 42% (base 3.2%) |
+| 1STP | Streptavidin + biotin | 0.891 | 0.990 | 67% (base 4.1%) |
+| 2GBP | Glucose-binding protein | 0.181 | 0.969 | 20% (base 1.0%) |
+| 4HHB | Haemoglobin + haem | 0.533 | 0.899 | 50% (base 4.4%) |
 
-## What this means
+## What made the difference
 
-The spread across structures is the honest headline. Streptavidin, with a small
-deep biotin pocket, is predicted well (PR-AUC 0.61, ROC-AUC 0.92). EGFR is close
-to chance on this metric. The model has learned something real about where
-pockets tend to sit -- exposed, hydrophobic, geometrically clustered -- but it
-has not learned to identify *a specific* binding site.
+The first model used residue chemistry only — identity, hydrophobicity, charge
+and SASA — and reached PR-AUC 0.151. Adding six geometric features per residue
+took it to 0.611, a four-fold improvement:
 
-Two limits are worth stating plainly:
+| Feature | AUC alone |
+| :--- | ---: |
+| concavity (does the residue face into a hollow) | 0.632 |
+| radial position (how far from the protein centre) | 0.325 (inverse, so 0.675) |
+| mid-shell density | 0.558 |
+| protrusion, planarity, contact density | ~0.51 each |
 
-- **Labels are ligand-specific.** A residue counts as positive only if it
-  contacts the ligand that happened to be crystallised in that entry. Allosteric
-  sites, cryptic pockets and second binding sites are all labelled negative, so
-  some "false positives" may not be false at all.
-- **The features are coarse.** Residue identity, hydrophobicity, charge and SASA
-  at the Calpha level throw away side-chain geometry, which is much of what
-  determines whether a pocket can actually accommodate a molecule.
+Chemistry says what a residue *is*; a pocket is about where it *sits*. Mean
+aggregation over neighbours cannot recover concavity on its own, so stating it
+explicitly is what unlocked the model.
 
-## What would likely help
+## Honest limits
 
-1. All-atom or side-chain-level nodes instead of one node per residue.
-2. Evolutionary features (a PSSM or an ESM embedding) -- conservation is one of
-   the strongest signals for functional sites and is absent here entirely.
-3. Predicting pockets as clusters rather than scoring residues independently,
-   which is closer to what the task actually is.
+- **Labels are ligand-specific.** A residue is positive only if it contacts the
+  ligand crystallised in that entry. Allosteric sites, cryptic pockets and
+  second sites are all labelled negative, so some "false positives" are real
+  pockets for other molecules.
+- **Features stop at the Calpha.** Side-chain geometry, which decides whether a
+  molecule physically fits, is invisible to the model.
+- **2GBP scores poorly** (PR-AUC 0.181) because only 3 of its 309 residues are
+  labelled positive; with so few, the metric is unstable even though ROC-AUC is
+  0.969.
+
+## What would likely help next
+
+1. All-atom or side-chain-level nodes.
+2. Evolutionary features (PSSM or an ESM embedding) — conservation is one of the
+   strongest signals for functional sites and is absent here entirely.
+3. Predicting pockets as clusters rather than scoring residues independently.

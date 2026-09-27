@@ -17,6 +17,8 @@ import torch.nn as nn
 from Bio.PDB import PDBParser, ShrakeRupley
 from scipy.spatial import cKDTree
 
+from features import geometric
+
 AA_MAP = {
     "ALA": 0, "ARG": 1, "ASN": 2, "ASP": 3, "CYS": 4,
     "GLN": 5, "GLU": 6, "GLY": 7, "HIS": 8, "ILE": 9,
@@ -145,6 +147,9 @@ def build_graph(pdb_path: str, cutoff_radius: float = 8.0,
         feats[i, NUM_AA_CLASSES] = KD_HYDROPHOBICITY.get(name, 0.0) / 4.5
         feats[i, NUM_AA_CLASSES + 1] = CHARGE.get(name, 0.0)
         feats[i, NUM_AA_CLASSES + 2] = min(sasa[i] / MAX_ASA.get(name, 200), 1.0)
+
+    # Pocket geometry: chemistry alone does not say where a hollow is.
+    feats = np.concatenate([feats, geometric(coords, cutoff_radius)], axis=1)
 
     tree = cKDTree(coords)
     pairs = tree.query_pairs(cutoff_radius, output_type="ndarray")
