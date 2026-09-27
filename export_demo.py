@@ -15,6 +15,7 @@ import numpy as np
 from sklearn.metrics import average_precision_score, roc_auc_score
 
 from predict import fetch_pdb, predict
+from secondary import assign as assign_ss
 
 # Structures chosen to be recognisable and to cover different pocket types.
 TARGETS = [
@@ -45,6 +46,12 @@ def main():
         # Centre and round: the viewer only needs ~0.1 A precision.
         coords = np.round(coords - coords.mean(axis=0), 1)
 
+        # Ribbons must not jump between chains, and the cartoon needs to know
+        # which stretches are helix or strand.
+        chains = [c for c, _, _ in g["residues"]]
+        breaks = {i for i in range(1, len(chains)) if chains[i] != chains[i - 1]}
+        ss = assign_ss(g["coords"], breaks)
+
         entry = {
             "id": pdb_id,
             "name": name,
@@ -53,6 +60,8 @@ def main():
             "p": [round(float(v), 4) for v in probs],
             "y": [int(v) for v in y],
             "res": [f"{n} {c}{num}" for c, num, n in g["residues"]],
+            "ss": ss,
+            "chain": chains,
             "edges": int(g["edge_index"].shape[1] // 2),
             "n_pos": int(y.sum()),
             "pr_auc": float(average_precision_score(y, probs)) if 0 < y.sum() < len(y) else 0.0,

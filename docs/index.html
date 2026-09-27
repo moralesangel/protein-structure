@@ -92,7 +92,7 @@
     <div class="layout">
       <div>
         <canvas id="view"></canvas>
-        <p class="viewhint">Drag to rotate · scroll to zoom · each sphere is one residue</p>
+        <p class="viewhint">Drag to rotate · scroll to zoom · ribbons follow the backbone, spheres mark the top predictions</p>
         <div class="ramp"></div>
         <div class="rampscale"><span>lowest scoring residues</span><span>highest scoring · predicted pocket</span></div>
       </div>
@@ -137,6 +137,8 @@
 </div>
 
 <script type="module">
+import { buildCartoon } from './cartoon.js';
+
 const $ = (id) => document.getElementById(id);
 let DATA = null, current = null;
 let renderer, scene, camera, group, raf;
@@ -190,7 +192,7 @@ function resize() {
   camera.updateProjectionMatrix();
 }
 
-/** Build spheres for residues and thin lines for the backbone trace. */
+/** Ribbon cartoon coloured by prediction, with markers on the top residues. */
 function buildScene(p) {
   if (group) scene.remove(group);
   group = new THREE.Group();
@@ -198,7 +200,7 @@ function buildScene(p) {
   // The model's probabilities sit in a narrow band (often 0.05-0.3), so a raw
   // 0-1 ramp paints everything the same colour. Colour by rank instead: the
   // ranking is what the model actually provides, and it makes the top-scoring
-  // cluster visible. The legend and the table still show real probabilities.
+  // stretch visible. The legend and the table still show real probabilities.
   const sorted = [...p.p].sort((a, b) => a - b);
   const rankOf = (v) => {
     let lo = 0, hi = sorted.length;
@@ -209,41 +211,41 @@ function buildScene(p) {
   const coords = p.coords;
   const n = coords.length;
   const centre = [0, 1, 2].map((k) => coords.reduce((s, c) => s + c[k], 0) / n);
-  let radius = 0;
-  for (const c of coords) {
-    radius = Math.max(radius, Math.hypot(c[0] - centre[0], c[1] - centre[1], c[2] - centre[2]));
-  }
+  const local = coords.map((c) => [c[0] - centre[0], c[1] - centre[1], c[2] - centre[2]]);
 
-  const geo = new THREE.SphereGeometry(1, 16, 12);
-  const mesh = new THREE.InstancedMesh(geo, new THREE.MeshLambertMaterial(), n);
+  // Frame the bulk of the structure, not its outliers: several entries carry a
+  // loose peptide far from the main domain, and fitting the full bounding
+  // sphere to it leaves the domain small and off to one side.
+  const dists = local.map((c) => Math.hypot(c[0], c[1], c[2])).sort((a, b) => a - b);
+  const radius = dists[Math.floor(dists.length * 0.92)] || dists[dists.length - 1];
+
+  const colours = p.p.map((v) => new THREE.Color(ramp(rankOf(v))));
+  const chainBreaks = new Set();
+  for (let i = 1; i < n; i++) if (p.chain[i] !== p.chain[i - 1]) chainBreaks.add(i);
+
+  const geo = buildCartoon(THREE, local, p.ss, colours, chainBreaks);
+  const mat = new THREE.MeshPhongMaterial({
+    vertexColors: true, shininess: 28, specular: 0x1a2030,
+    side: THREE.DoubleSide, flatShading: false,
+  });
+  group.add(new THREE.Mesh(geo, mat));
+
+  // Mark the highest-scoring residues so the predicted pocket is unmistakable.
+  const top = [...p.p.keys()].sort((a, b) => p.p[b] - p.p[a]).slice(0, Math.max(6, Math.round(n * 0.06)));
+  const sphere = new THREE.SphereGeometry(1, 14, 12);
+  const marks = new THREE.InstancedMesh(sphere,
+    new THREE.MeshPhongMaterial({ shininess: 60 }), top.length);
   const m = new THREE.Matrix4();
-  const colour = new THREE.Color();
-  for (let i = 0; i < n; i++) {
-    const prob = rankOf(p.p[i]);
-    // Confident residues are drawn larger so pockets read at a glance.
-    const s = 0.85 + Math.pow(prob, 4) * 2.6;
+  top.forEach((idx, k) => {
+    const s = 1.5;
     m.makeScale(s, s, s);
-    m.setPosition(coords[i][0] - centre[0], coords[i][1] - centre[1], coords[i][2] - centre[2]);
-    mesh.setMatrixAt(i, m);
-    colour.setHex(ramp(prob));
-    mesh.setColorAt(i, colour);
-  }
-  mesh.instanceMatrix.needsUpdate = true;
-  if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
-  group.add(mesh);
-
-  // Backbone trace: connect consecutive residues that are actually adjacent.
-  const pts = [];
-  for (let i = 1; i < n; i++) {
-    const a = coords[i - 1], b = coords[i];
-    if (Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]) < 4.5) {
-      pts.push(a[0] - centre[0], a[1] - centre[1], a[2] - centre[2],
-               b[0] - centre[0], b[1] - centre[1], b[2] - centre[2]);
-    }
-  }
-  const lg = new THREE.BufferGeometry();
-  lg.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3));
-  group.add(new THREE.LineSegments(lg, new THREE.LineBasicMaterial({ color: 0x334155 })));
+    m.setPosition(local[idx][0], local[idx][1], local[idx][2]);
+    marks.setMatrixAt(k, m);
+    marks.setColorAt(k, new THREE.Color(ramp(0.94)));
+  });
+  marks.instanceMatrix.needsUpdate = true;
+  if (marks.instanceColor) marks.instanceColor.needsUpdate = true;
+  group.add(marks);
 
   scene.add(group);
   camera.position.set(0, 0, radius * 2.7);
