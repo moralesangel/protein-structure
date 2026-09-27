@@ -4,21 +4,19 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Binding Site GNN — live demo</title>
-<meta name="description" content="A graph neural network predicting ligand-binding residues on protein structures, shown in 3D in your browser.">
-<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/0.160.0/three.min.js"></script>
+<meta name="description" content="A graph neural network predicting ligand-binding residues on protein structures, rendered with Mol*.">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/molstar@4.9.0/build/viewer/molstar.css">
 <style>
   :root {
     --bg:#0a0e16; --panel:#121826; --line:#1f2937;
     --text:#e6ecf5; --muted:#94a3b8;
     --accent:#38bdf8; --accent-dim:#0ea5e9;
-    --hot:#f97316; --cold:#1e3a5f;
   }
   @media (prefers-color-scheme: light) {
     :root:not([data-theme="dark"]) {
       --bg:#f4f6fa; --panel:#fff; --line:#e2e8f0;
       --text:#0f172a; --muted:#64748b;
       --accent:#0369a1; --accent-dim:#075985;
-      --cold:#cbd5e1;
     }
   }
   * { box-sizing:border-box; }
@@ -38,8 +36,19 @@
   .layout { display:grid; grid-template-columns:1.45fr 1fr; gap:16px; }
   @media (max-width:820px) { .layout { grid-template-columns:1fr; } }
 
-  #view { width:100%; aspect-ratio:1/0.78; border-radius:10px; background:#060910; border:1px solid var(--line); display:block; cursor:grab; touch-action:none; }
-  #view:active { cursor:grabbing; }
+  #viewbox { position:relative; width:100%; aspect-ratio:1/0.78; border-radius:10px; overflow:hidden; background:#060910; border:1px solid var(--line); }
+  #viewer { position:absolute; inset:0; }
+  /* The page drives the viewer, so hide Mol*'s own controls and overlays. */
+  #viewbox .msp-viewport-controls,
+  #viewbox .msp-viewport-top-left-controls,
+  #viewbox .msp-viewport-controls-buttons,
+  #viewbox .msp-highlight-toast-wrapper,
+  #viewbox .msp-left-panel-controls,
+  #viewbox .msp-log { display:none !important; }
+  .booting {
+    position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
+    color:var(--muted); font-size:.9rem; background:#060910; z-index:5; text-align:center; padding:20px;
+  }
   .viewhint { font-size:.78rem; color:var(--muted); margin:8px 0 0; text-align:center; }
 
   .picker { display:flex; flex-wrap:wrap; gap:6px; margin-bottom:12px; }
@@ -48,7 +57,8 @@
     background:transparent; color:var(--text); border:1px solid var(--line);
   }
   .picker button[aria-pressed="true"] { background:color-mix(in srgb,var(--accent) 20%,transparent); border-color:var(--accent); color:var(--accent); }
-  .picker button:hover:not([aria-pressed="true"]) { border-color:var(--accent); }
+  .picker button:hover:not([aria-pressed="true"]):not(:disabled) { border-color:var(--accent); }
+  .picker button:disabled { opacity:.5; cursor:wait; }
 
   .stat { display:flex; justify-content:space-between; gap:10px; padding:7px 0; border-bottom:1px dashed var(--line); font-size:.88rem; }
   .stat:last-child { border-bottom:0; }
@@ -60,13 +70,13 @@
   td { padding:4px 0; border-top:1px solid var(--line); font-family:ui-monospace,monospace; }
   td.p { text-align:right; }
   tr.hit td { color:var(--accent); }
-  .swatch { display:inline-block; width:9px; height:9px; border-radius:2px; margin-right:6px; vertical-align:middle; }
 
   .ramp { height:10px; border-radius:99px; margin:10px 0 4px;
-          background:linear-gradient(90deg,#1e3a5f,#2563eb,#a855f7,#f97316,#fde047); }
+          background:linear-gradient(90deg,#2b4a7d,#3b82f6,#a78bfa,#f59e0b,#fde047); }
   .rampscale { display:flex; justify-content:space-between; font-family:ui-monospace,monospace; font-size:.7rem; color:var(--muted); }
 
   .note { font-size:.85rem; color:var(--muted); }
+  .note a { color:var(--accent); }
   code { font-family:ui-monospace,monospace; font-size:.86em; background:color-mix(in srgb,var(--text) 9%,transparent); padding:1px 5px; border-radius:4px; }
   .steps { display:grid; gap:10px; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); }
   .step { background:var(--bg); border:1px solid var(--line); border-radius:8px; padding:10px 12px; }
@@ -74,7 +84,6 @@
   .step span { font-size:.83rem; color:var(--muted); }
   footer { text-align:center; color:var(--muted); font-size:.83rem; margin-top:26px; }
   footer a { color:var(--accent); }
-  .loading { text-align:center; color:var(--muted); padding:30px; }
 </style>
 </head>
 <body>
@@ -82,7 +91,7 @@
   <header>
     <h1>Binding Site GNN</h1>
     <p class="sub">
-      A graph neural network scoring every residue for ligand binding, in 3D.
+      A graph neural network scoring every residue for ligand binding.
       <a href="https://github.com/moralesangel/protein-structure">Source and training notebook →</a>
     </p>
   </header>
@@ -91,8 +100,11 @@
     <div class="picker" id="picker"></div>
     <div class="layout">
       <div>
-        <canvas id="view"></canvas>
-        <p class="viewhint">Drag to rotate · scroll to zoom · ribbons follow the backbone, spheres mark the top predictions</p>
+        <div id="viewbox">
+          <div id="viewer"></div>
+          <div class="booting" id="booting">Loading the molecular viewer…</div>
+        </div>
+        <p class="viewhint">Drag to rotate · scroll to zoom · the cartoon is coloured by predicted binding probability</p>
         <div class="ramp"></div>
         <div class="rampscale"><span>lowest scoring residues</span><span>highest scoring · predicted pocket</span></div>
       </div>
@@ -124,6 +136,12 @@
       checkpoint was selected on validation PR-AUC rather than accuracy — with a base rate
       that low, a model predicting "never" would still score 93% accurate.
     </p>
+    <p class="note">
+      The structures are drawn by <a href="https://molstar.org/">Mol*</a>, the viewer behind the
+      RCSB PDB site and the AlphaFold database. Each prediction travels in the B-factor column
+      of the PDB file — the same column AlphaFold uses for pLDDT — so the colouring is the
+      viewer's own rather than something bolted on.
+    </p>
   </section>
 
   <section class="panel">
@@ -132,206 +150,164 @@
   </section>
 
   <footer>
-    Predictions computed with the trained checkpoint and shipped as JSON; the viewer runs in your browser.
+    Predictions computed with the trained checkpoint; the viewer runs in your browser.
   </footer>
 </div>
 
-<script type="module">
-import { buildCartoon } from './cartoon.js';
+<script src="https://cdn.jsdelivr.net/npm/molstar@4.9.0/build/viewer/molstar.js"></script>
+<script>
+(function () {
+  var $ = function (id) { return document.getElementById(id); };
+  var DATA = null, viewer = null, busy = false;
 
-const $ = (id) => document.getElementById(id);
-let DATA = null, current = null;
-let renderer, scene, camera, group, raf;
+  function renderSide(p) {
+    var rows = [
+      ['Residues', p.n_res],
+      ['Contacts (8 Å edges)', p.edges],
+      ['Residues touching the ligand', p.n_pos],
+      ['PR-AUC on this structure', p.pr_auc.toFixed(3)],
+      ['ROC-AUC on this structure', p.roc_auc.toFixed(3)]
+    ];
+    $('stats').innerHTML = rows.map(function (r) {
+      var hot = r[0].indexOf('PR-AUC') === 0 || r[0].indexOf('ROC-AUC') === 0;
+      return '<div class="stat"><span>' + r[0] + '</span><b' +
+             (hot ? ' class="good"' : '') + '>' + r[1] + '</b></div>';
+    }).join('');
 
-/** Blue -> purple -> orange -> yellow, matching the legend ramp. */
-function ramp(t) {
-  const stops = [
-    [0.00, [0x1e, 0x3a, 0x5f]],
-    [0.35, [0x25, 0x63, 0xeb]],
-    [0.60, [0xa8, 0x55, 0xf7]],
-    [0.82, [0xf9, 0x73, 0x16]],
-    [1.00, [0xfd, 0xe0, 0x47]],
-  ];
-  t = Math.max(0, Math.min(1, t));
-  for (let i = 1; i < stops.length; i++) {
-    if (t <= stops[i][0]) {
-      const [a, ca] = stops[i - 1], [b, cb] = stops[i];
-      const u = (t - a) / (b - a);
-      return (Math.round(ca[0] + u * (cb[0] - ca[0])) << 16) |
-             (Math.round(ca[1] + u * (cb[1] - ca[1])) << 8) |
-              Math.round(ca[2] + u * (cb[2] - ca[2]));
-    }
+    $('top').innerHTML = p.top.map(function (t) {
+      return '<tr class="' + (t.hit ? 'hit' : '') + '">' +
+             '<td>' + t.label + (t.hit ? ' ✓' : '') + '</td>' +
+             '<td class="p">' + t.p.toFixed(3) + '</td></tr>';
+    }).join('');
+
+    var hits = p.top.filter(function (t) { return t.hit; }).length;
+    $('legend').innerHTML = '✓ marks a residue that really does contact the ligand — ' +
+                            hits + ' of the top 10 here.';
   }
-  return 0xfde047;
-}
 
-function initThree() {
-  const canvas = $('view');
-  renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false });
-  renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
-  scene = new THREE.Scene();
-  scene.background = new THREE.Color(0x060910);
-  camera = new THREE.PerspectiveCamera(42, 1, 0.1, 5000);
-  scene.add(new THREE.AmbientLight(0xffffff, 0.62));
-  const key = new THREE.DirectionalLight(0xffffff, 0.85);
-  key.position.set(1, 1, 1);
-  scene.add(key);
-  const rim = new THREE.DirectionalLight(0x6ea8ff, 0.35);
-  rim.position.set(-1, -0.5, -1);
-  scene.add(rim);
-  resize();
-  addEventListener('resize', resize);
-}
+  function setBusy(on) {
+    document.querySelectorAll('#picker button').forEach(function (b) { b.disabled = on; });
+  }
 
-function resize() {
-  const c = $('view');
-  const w = c.clientWidth, h = c.clientHeight;
-  if (!w || !h) return;
-  renderer.setSize(w, h, false);
-  camera.aspect = w / h;
-  camera.updateProjectionMatrix();
-}
+  function show(key) {
+    if (busy || !viewer) return;
+    busy = true;
+    setBusy(true);
+    document.querySelectorAll('#picker button').forEach(function (b) {
+      b.setAttribute('aria-pressed', String(b.dataset.k === key));
+    });
 
-/** Ribbon cartoon coloured by prediction, with markers on the top residues. */
-function buildScene(p) {
-  if (group) scene.remove(group);
-  group = new THREE.Group();
+    var p = DATA.proteins[key];
+    $('pname').textContent = p.id.toUpperCase() + ' — ' + p.name;
+    renderSide(p);
 
-  // The model's probabilities sit in a narrow band (often 0.05-0.3), so a raw
-  // 0-1 ramp paints everything the same colour. Colour by rank instead: the
-  // ranking is what the model actually provides, and it makes the top-scoring
-  // stretch visible. The legend and the table still show real probabilities.
-  const sorted = [...p.p].sort((a, b) => a - b);
-  const rankOf = (v) => {
-    let lo = 0, hi = sorted.length;
-    while (lo < hi) { const mid = (lo + hi) >> 1; if (sorted[mid] < v) lo = mid + 1; else hi = mid; }
-    return lo / (sorted.length - 1);
-  };
+    var url = new URL(p.file, location.href).href;
+    // The B-factor column holds the prediction scaled to 0-100, which is what
+    // Mol*'s "uncertainty" theme reads. The domain is set from this structure's
+    // own percentiles: absolute probabilities sit in a narrow band, so a fixed
+    // 0-100 range would paint every protein a single flat colour.
+    var params = {
+      representationParams: {
+        theme: {
+          globalName: 'uncertainty',
+          globalColorParams: {
+            domain: [p.p_min * 100, p.p_max * 100],
+            list: {
+              kind: 'interpolate',
+              colors: [
+                [0x2b4a7d, 0], [0x3b82f6, 0.35], [0xa78bfa, 0.6],
+                [0xf59e0b, 0.82], [0xfde047, 1]
+              ]
+            }
+          }
+        }
+      }
+    };
 
-  const coords = p.coords;
-  const n = coords.length;
-  const centre = [0, 1, 2].map((k) => coords.reduce((s, c) => s + c[k], 0) / n);
-  const local = coords.map((c) => [c[0] - centre[0], c[1] - centre[1], c[2] - centre[2]]);
+    viewer.plugin.clear()
+      .then(function () { return viewer.loadStructureFromUrl(url, 'pdb', false, params); })
+      .catch(function () {
+        // Older bundles reject unknown theme params; the structure still matters.
+        return viewer.loadStructureFromUrl(url, 'pdb', false);
+      })
+      .then(function () {
+        // Mol* does not fit the camera after a programmatic load, and several
+        // entries carry a loose peptide that would otherwise dominate the view.
+        try {
+          // requestCameraReset is the plugin's own fit-to-scene, and unlike
+          // focusLoci it needs no exports beyond the viewer instance.
+          viewer.plugin.canvas3d.requestCameraReset({ durationMs: 400 });
+        } catch (e) {
+          try { viewer.plugin.managers.camera.reset(undefined, 400); } catch (e2) {}
+        }
+        busy = false;
+        setBusy(false);
+      })
+      .catch(function () {
+        $('booting').style.display = 'flex';
+        $('booting').textContent = 'Could not load ' + p.id.toUpperCase() + '.';
+        busy = false;
+        setBusy(false);
+      });
+  }
 
-  // Frame the bulk of the structure, not its outliers: several entries carry a
-  // loose peptide far from the main domain, and fitting the full bounding
-  // sphere to it leaves the domain small and off to one side.
-  const dists = local.map((c) => Math.hypot(c[0], c[1], c[2])).sort((a, b) => a - b);
-  const radius = dists[Math.floor(dists.length * 0.92)] || dists[dists.length - 1];
+  function boot(data) {
+    DATA = data;
+    var keys = Object.keys(data.proteins);
+    $('picker').innerHTML = keys.map(function (k) {
+      return '<button data-k="' + k + '" disabled>' + data.proteins[k].id.toUpperCase() +
+             ' · ' + data.proteins[k].short + '</button>';
+    }).join('');
+    $('picker').addEventListener('click', function (e) {
+      var b = e.target.closest('button[data-k]');
+      if (b) show(b.dataset.k);
+    });
+    $('honest').innerHTML = data.honest;
 
-  const colours = p.p.map((v) => new THREE.Color(ramp(rankOf(v))));
-  const chainBreaks = new Set();
-  for (let i = 1; i < n; i++) if (p.chain[i] !== p.chain[i - 1]) chainBreaks.add(i);
+    if (typeof molstar === 'undefined' || !molstar.Viewer) {
+      $('booting').textContent = 'The molecular viewer failed to load.';
+      return;
+    }
 
-  const geo = buildCartoon(THREE, local, p.ss, colours, chainBreaks);
-  const mat = new THREE.MeshPhongMaterial({
-    vertexColors: true, shininess: 28, specular: 0x1a2030,
-    side: THREE.DoubleSide, flatShading: false,
+    molstar.Viewer.create('viewer', {
+      layoutIsExpanded: false,
+      layoutShowControls: false,
+      layoutShowSequence: false,
+      layoutShowLog: false,
+      layoutShowLeftPanel: false,
+      viewportShowExpand: false,
+      viewportShowSelectionMode: false,
+      viewportShowAnimation: false,
+      viewportShowControls: false,
+      viewportShowSettings: false,
+      viewportShowTrajectoryControls: false,
+      // Nothing here resolves entries by id, and leaving these at their
+      // defaults makes the viewer probe a local service that does not exist.
+      pdbProvider: 'rcsb',
+      emdbProvider: 'rcsb',
+      // Off by default this probes a local density server that is not running.
+      volumeStreamingDisabled: true
+    }).then(function (v) {
+      viewer = v;
+      window.__plugin = v.plugin;
+      try {
+        v.plugin.canvas3d.setProps({
+          renderer: { backgroundColor: 0x060910 },
+          camera: { helper: { axes: { name: 'off', params: {} } } }
+        });
+      } catch (e) { /* not fatal if the build exposes this differently */ }
+      $('booting').style.display = 'none';
+      show(keys[0]);
+    }).catch(function () {
+      $('booting').textContent = 'The molecular viewer failed to start.';
+    });
+  }
+
+  fetch('./predictions.json').then(function (r) { return r.json(); }).then(boot).catch(function () {
+    $('pname').textContent = 'Could not load predictions.';
+    $('booting').textContent = 'Could not load predictions.';
   });
-  group.add(new THREE.Mesh(geo, mat));
-
-  // Mark the highest-scoring residues so the predicted pocket is unmistakable.
-  const top = [...p.p.keys()].sort((a, b) => p.p[b] - p.p[a]).slice(0, Math.max(6, Math.round(n * 0.06)));
-  const sphere = new THREE.SphereGeometry(1, 14, 12);
-  const marks = new THREE.InstancedMesh(sphere,
-    new THREE.MeshPhongMaterial({ shininess: 60 }), top.length);
-  const m = new THREE.Matrix4();
-  top.forEach((idx, k) => {
-    const s = 1.5;
-    m.makeScale(s, s, s);
-    m.setPosition(local[idx][0], local[idx][1], local[idx][2]);
-    marks.setMatrixAt(k, m);
-    marks.setColorAt(k, new THREE.Color(ramp(0.94)));
-  });
-  marks.instanceMatrix.needsUpdate = true;
-  if (marks.instanceColor) marks.instanceColor.needsUpdate = true;
-  group.add(marks);
-
-  scene.add(group);
-  camera.position.set(0, 0, radius * 2.7);
-  camera.lookAt(0, 0, 0);
-  return radius;
-}
-
-let drag = null, rotX = 0.3, rotY = 0.4, zoom = 1, autoSpin = true;
-
-function bindControls() {
-  const c = $('view');
-  c.addEventListener('pointerdown', (e) => { drag = { x: e.clientX, y: e.clientY }; autoSpin = false; c.setPointerCapture(e.pointerId); });
-  c.addEventListener('pointermove', (e) => {
-    if (!drag) return;
-    rotY += (e.clientX - drag.x) * 0.008;
-    rotX += (e.clientY - drag.y) * 0.008;
-    drag = { x: e.clientX, y: e.clientY };
-  });
-  const end = () => { drag = null; };
-  c.addEventListener('pointerup', end);
-  c.addEventListener('pointercancel', end);
-  c.addEventListener('wheel', (e) => {
-    e.preventDefault();
-    zoom = Math.max(0.45, Math.min(2.6, zoom * (e.deltaY > 0 ? 1.1 : 0.9)));
-  }, { passive: false });
-}
-
-function animate() {
-  raf = requestAnimationFrame(animate);
-  if (!group) return;
-  if (autoSpin) rotY += 0.0026;
-  group.rotation.x = rotX;
-  group.rotation.y = rotY;
-  camera.position.setLength(current ? current.radius * 2.7 * zoom : 100);
-  camera.lookAt(0, 0, 0);
-  renderer.render(scene, camera);
-}
-
-function show(key) {
-  const p = DATA.proteins[key];
-  current = { ...p, radius: buildScene(p) };
-  rotX = 0.3; rotY = 0.4; zoom = 1; autoSpin = true;
-
-  $('pname').textContent = `${p.id.toUpperCase()} — ${p.name}`;
-  const stats = [
-    ['Residues', p.p.length],
-    ['Contacts (8 Å edges)', p.edges],
-    ['Residues touching the ligand', p.n_pos],
-    ['PR-AUC on this structure', p.pr_auc.toFixed(3)],
-    ['ROC-AUC on this structure', p.roc_auc.toFixed(3)],
-  ];
-  $('stats').innerHTML = stats.map(([k, v]) =>
-    `<div class="stat"><span>${k}</span><b${k.startsWith('PR') || k.startsWith('ROC') ? ' class="good"' : ''}>${v}</b></div>`).join('');
-
-  const order = [...p.p.keys()].sort((a, b) => p.p[b] - p.p[a]).slice(0, 10);
-  $('top').innerHTML = order.map((i) => {
-    const hit = p.y[i] > 0.5;
-    return `<tr class="${hit ? 'hit' : ''}">
-      <td><span class="swatch" style="background:#${ramp(0.55 + 0.45 * (1 - order.indexOf(i) / 10)).toString(16).padStart(6,'0')}"></span>${p.res[i]}${hit ? ' ✓' : ''}</td>
-      <td class="p">${p.p[i].toFixed(3)}</td></tr>`;
-  }).join('');
-
-  const hits = order.filter((i) => p.y[i] > 0.5).length;
-  $('legend').innerHTML = `✓ marks a residue that really does contact the ligand — ${hits} of the top 10 here.`;
-
-  document.querySelectorAll('#picker button').forEach((b) =>
-    b.setAttribute('aria-pressed', String(b.dataset.k === key)));
-}
-
-fetch('./predictions.json').then((r) => r.json()).then((d) => {
-  DATA = d;
-  initThree();
-  bindControls();
-  animate();
-  const keys = Object.keys(d.proteins);
-  $('picker').innerHTML = keys.map((k) =>
-    `<button data-k="${k}">${d.proteins[k].id.toUpperCase()} · ${d.proteins[k].short}</button>`).join('');
-  $('picker').addEventListener('click', (e) => {
-    const b = e.target.closest('button[data-k]');
-    if (b) show(b.dataset.k);
-  });
-  $('honest').innerHTML = d.honest;
-  show(keys[0]);
-}).catch(() => {
-  $('pname').textContent = 'Could not load predictions.';
-});
+})();
 </script>
 </body>
 </html>
