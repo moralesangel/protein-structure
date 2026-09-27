@@ -269,7 +269,14 @@
       return;
     }
 
+    // Load every bundled extension except volseg, whose segmentation browser
+    // probes an external service this demo never uses.
+    var exts = Object.keys(molstar.ExtensionMap || {}).filter(function (k) {
+      return k !== 'volseg';
+    });
+
     molstar.Viewer.create('viewer', {
+      extensions: exts,
       layoutIsExpanded: false,
       layoutShowControls: false,
       layoutShowSequence: false,
